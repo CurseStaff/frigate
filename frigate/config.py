@@ -144,6 +144,10 @@ class ZoomingModeEnum(str, Enum):
     absolute = "absolute"
     relative = "relative"
 
+class PtzWaitEnum(str, Enum):
+    onvif = "onvif"
+    calibration = "calibration"
+
 
 class PtzAutotrackConfig(FrigateBaseModel):
     enabled: bool = Field(default=False, title="Enable PTZ object autotracking.")
@@ -168,8 +172,14 @@ class PtzAutotrackConfig(FrigateBaseModel):
         default="home",
         title="Name of camera preset to return to when object tracking is over.",
     )
+    return_preset_on_startup: bool = Field(
+        default=False, title="call the camera preset on system startup"
+    )
     timeout: int = Field(
         default=10, title="Seconds to delay before returning to preset."
+    )
+    wait: PtzWaitEnum = Field(
+        default=PtzWaitEnum.onvif, title="Autotracker wait ptz waiting movement mode."
     )
     movement_weights: Optional[Union[float, List[float]]] = Field(
         default=[],

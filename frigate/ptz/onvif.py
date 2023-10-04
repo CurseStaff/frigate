@@ -3,6 +3,7 @@
 import logging
 import site
 from enum import Enum
+import time
 
 import numpy
 from onvif import ONVIFCamera, ONVIFError
@@ -57,6 +58,7 @@ class OnvifController:
                         "active": False,
                         "features": [],
                         "presets": {},
+                        "start_movement_times": 0,
                     }
                 except ONVIFError as e:
                     logger.error(f"Onvif connection to {cam.name} failed: {e}")
@@ -476,7 +478,7 @@ class OnvifController:
         # MoveStatus is required for autotracking - should return "true" if supported
         return find_by_key(vars(service_capabilities), "MoveStatus")
 
-    def get_camera_status(self, camera_name: str) -> None:
+    def get_camera_status(self, camera_name: str, option: dict = {}) -> None:
         if camera_name not in self.cams.keys():
             logger.error(f"Onvif is not setup for {camera_name}")
             return {}
@@ -507,33 +509,35 @@ class OnvifController:
                 )
                 return
 
-        if pan_tilt_status.lower() == "idle" and (
-            zoom_status is None or zoom_status.lower() == "idle"
-        ):
-            self.cams[camera_name]["active"] = False
-            if not self.ptz_metrics[camera_name]["ptz_stopped"].is_set():
-                self.ptz_metrics[camera_name]["ptz_stopped"].set()
+        if self.config.cameras[camera_name].onvif.autotracking.wait == "onvif" or option.get("calibrate", False) == True:
 
-                logger.debug(
-                    f"PTZ stop time: {self.ptz_metrics[camera_name]['ptz_frame_time'].value}"
-                )
+            if pan_tilt_status.lower() == "idle" and (
+                zoom_status is None or zoom_status.lower() == "idle"
+            ):
+                self.cams[camera_name]["active"] = False
+                if not self.ptz_metrics[camera_name]["ptz_stopped"].is_set():
+                    self.ptz_metrics[camera_name]["ptz_stopped"].set()
 
-                self.ptz_metrics[camera_name]["ptz_stop_time"].value = self.ptz_metrics[
-                    camera_name
-                ]["ptz_frame_time"].value
-        else:
-            self.cams[camera_name]["active"] = True
-            if self.ptz_metrics[camera_name]["ptz_stopped"].is_set():
-                self.ptz_metrics[camera_name]["ptz_stopped"].clear()
+                    logger.debug(
+                        f"PTZ stop time: {self.ptz_metrics[camera_name]['ptz_frame_time'].value}"
+                    )
 
-                logger.debug(
-                    f"PTZ start time: {self.ptz_metrics[camera_name]['ptz_frame_time'].value}"
-                )
+                    self.ptz_metrics[camera_name]["ptz_stop_time"].value = self.ptz_metrics[
+                        camera_name
+                    ]["ptz_frame_time"].value
+            else:
+                self.cams[camera_name]["active"] = True
+                if self.ptz_metrics[camera_name]["ptz_stopped"].is_set():
+                    self.ptz_metrics[camera_name]["ptz_stopped"].clear()
 
-                self.ptz_metrics[camera_name][
-                    "ptz_start_time"
-                ].value = self.ptz_metrics[camera_name]["ptz_frame_time"].value
-                self.ptz_metrics[camera_name]["ptz_stop_time"].value = 0
+                    logger.debug(
+                        f"PTZ start time: {self.ptz_metrics[camera_name]['ptz_frame_time'].value}"
+                    )
+
+                    self.ptz_metrics[camera_name][
+                        "ptz_start_time"
+                    ].value = self.ptz_metrics[camera_name]["ptz_frame_time"].value
+                    self.ptz_metrics[camera_name]["ptz_stop_time"].value = 0
 
         if (
             self.config.cameras[camera_name].onvif.autotracking.zooming
@@ -551,3 +555,14 @@ class OnvifController:
             logger.debug(
                 f'Camera zoom level: {self.ptz_metrics[camera_name]["ptz_zoom_level"].value}'
             )
+
+
+
+        if pan_tilt_status.lower() != "idle": 
+            if self.cams[camera_name]["start_movement_times"] == 0:
+                self.cams[camera_name]["start_movement_times"] = time.time()  # Enregistrez le temps de début
+            elif time.time() - self.cams[camera_name]["start_movement_times"] > 10:  # Plus de 10 secondes se sont écoulées
+                logger.warning(f"Camera {camera_name} has been moving for over 10 seconds!")
+                self.cams[camera_name]["start_movement_times"] = 0;
+        else: 
+            self.cams[camera_name]["start_movement_times"] = 0;   

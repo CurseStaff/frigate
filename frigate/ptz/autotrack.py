@@ -237,13 +237,13 @@ class PtzAutoTracker:
             self.onvif.get_camera_status(camera_name)
 
             # movement thread per camera
-            if not self.move_threads or not self.move_threads[camera_name]:
-                self.move_threads[camera_name] = threading.Thread(
-                    name=f"move_thread_{camera_name}",
-                    target=partial(self._process_move_queue, camera_name),
-                )
-                self.move_threads[camera_name].daemon = True
-                self.move_threads[camera_name].start()
+            
+            self.move_threads[camera_name] = threading.Thread(
+                name=f"move_thread_{camera_name}",
+                target=partial(self._process_move_queue, camera_name),
+            )
+            self.move_threads[camera_name].daemon = True
+            self.move_threads[camera_name].start()
 
             if cam.onvif.autotracking.movement_weights:
                 self.intercept[camera_name] = cam.onvif.autotracking.movement_weights[0]
@@ -251,8 +251,15 @@ class PtzAutoTracker:
                     camera_name
                 ] = cam.onvif.autotracking.movement_weights[1:]
 
+            if cam.onvif.autotracking.return_preset_on_startup:
+                self.onvif._move_to_preset(
+                    camera_name,
+                    self.config.cameras[camera_name].onvif.autotracking.return_preset.lower(),
+                )
             if cam.onvif.autotracking.calibrate_on_startup:
                 self._calibrate_camera(camera_name)
+
+
 
         self.autotracker_init[camera_name] = True
 
@@ -290,7 +297,7 @@ class PtzAutoTracker:
 
         # Wait until the camera finishes moving
         while not self.ptz_metrics[camera]["ptz_stopped"].is_set():
-            self.onvif.get_camera_status(camera)
+            self.onvif.get_camera_status(camera, {"calibrate": True})
 
         for step in range(num_steps):
             pan = step_sizes[step]
@@ -301,7 +308,8 @@ class PtzAutoTracker:
 
             # Wait until the camera finishes moving
             while not self.ptz_metrics[camera]["ptz_stopped"].is_set():
-                self.onvif.get_camera_status(camera)
+                self.onvif.get_camera_status(camera, {"calibrate": True})
+
             stop_time = time.time()
 
             self.move_metrics[camera].append(
@@ -322,7 +330,7 @@ class PtzAutoTracker:
 
             # Wait until the camera finishes moving
             while not self.ptz_metrics[camera]["ptz_stopped"].is_set():
-                self.onvif.get_camera_status(camera)
+                self.onvif.get_camera_status(camera, {"calibrate": True})
 
         self.calibrating[camera] = False
 
@@ -373,6 +381,10 @@ class PtzAutoTracker:
             self.write_config(camera)
 
     def _predict_movement_time(self, camera, pan, tilt):
+        if camera not in self.move_coefficients or len(self.move_coefficients[camera]) != 2:
+            logger.warning(f"Missing or incorrect movement_weights for camera {camera}, please run calibration.")
+            return 0.5;
+
         combined_movement = abs(pan) + abs(tilt)
         input_data = np.array([self.intercept[camera], combined_movement])
 
@@ -410,10 +422,10 @@ class PtzAutoTracker:
                         else:
                             self.onvif._move_relative(camera, pan, tilt, 0, 1)
 
+
                     # Wait until the camera finishes moving
-                    while not self.ptz_metrics[camera]["ptz_stopped"].is_set():
-                        # check if ptz is moving
-                        self.onvif.get_camera_status(camera)
+                    self._process_move_queue_wait(camera, pan, tilt)
+
 
                     if self.config.cameras[camera].onvif.autotracking.movement_weights:
                         logger.debug(
@@ -444,6 +456,27 @@ class PtzAutoTracker:
 
                     # calculate new coefficients if we have enough data
                     self._calculate_move_coefficients(camera)
+
+    def _process_move_queue_wait(self, camera_name, pan, tilt):
+        if self.config.cameras[camera_name].onvif.autotracking.wait == "calibration":
+            estimated_duration = self._predict_movement_time(camera_name, pan, tilt);
+            logger.debug(f"Wait calibration mode sleep for: {estimated_duration}")
+            
+            self.onvif.ptz_metrics[camera_name][
+                    "ptz_start_time"
+                ].value = self.onvif.ptz_metrics[camera_name]["ptz_frame_time"].value
+            self.onvif.ptz_metrics[camera_name]["ptz_stop_time"].value = 0
+
+            time.sleep(estimated_duration)
+
+            self.onvif.ptz_metrics[camera_name]["ptz_stop_time"].value = self.onvif.ptz_metrics[
+                    camera_name
+                ]["ptz_frame_time"].value
+
+        else:
+            while not self.ptz_metrics[camera_name]["ptz_stopped"].is_set():
+                # check if ptz is moving
+                self.onvif.get_camera_status(camera_name)
 
     def _enqueue_move(self, camera, frame_time, pan, tilt, zoom):
         def split_value(value):
@@ -764,7 +797,7 @@ class PtzAutoTracker:
         if self.calibrating[camera] or self.tracked_object[camera] is not None:
             return
 
-        logger.debug("Running camera maintenance")
+        logger.debug(f"Running camera maintenance ")
 
         # calls get_camera_status to check/update ptz movement
         # returns camera to preset after timeout when tracking is over
